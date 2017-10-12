@@ -1,0 +1,7 @@
+---
+# role for nagios client
+- hosts: nagios-client
+  remote_user: root
+  roles:
+    - nagios-client
+

@@ -1,0 +1,155 @@
+---
+# Playbook to install nagios server and generate hosts/checks
+# This also installs NRPE on clients for more in-depth checks based on
+# Ansible inventory
+# author: Will Foster (@sadsfae)
+# https://hobo.house/2016/06/24/automate-nagios-deployment-with-ansible/
+
+- name: Installation epel repository
+  yum: name={{item}} state=latest
+  with_items:
+   - epel-release
+- name: yum update to latest version
+  yum: name='*' state=latest
+
+- name: selinux disable
+  selinux: state=disabled
+
+- name: selinux runtime permasive 
+  action: command /usr/sbin/setenforce 0
+  ignore_errors: true
+  changed_when: false
+ 
+- hostname: name=nagios.example.com
+
+- name: Install HTTPD as webserver for nagios panel
+  yum: name={{ item }} state=present
+  become: true
+  with_items:
+    - httpd
+    - httpd-tools
+    - net-snmp-utils
+    - perl-IPC-Run
+    - perl-IO-Tty
+
+- name: Setup nagios HTTPD vhost
+  copy: src=nagios.conf dest=/etc/httpd/conf.d/
+
+- name: Install nagios packages and common plugins
+  yum: name={{ item }} state=present
+  become: true
+  with_items:
+    - nagios
+    - nagios-common
+    - nagios-plugins-ssh
+    - nagios-plugins-tcp
+    - nagios-plugins-http
+    - nagios-plugins-load
+    - nagios-plugins-nrpe
+    - nagios-plugins-uptime
+    - nagios-plugins-swap
+    - nagios-plugins-ping
+    - nagios-plugins-procs
+    - nagios-plugins-users
+    - nagios-plugins-disk
+    - libsemanage-python
+
+- name: Create empty password file
+  command: touch /etc/nagios/passwd
+  args:
+    creates: /etc/nagios/passwd
+  ignore_errors: true
+
+- name: Create nagios admin user
+  command: htpasswd -b -c /etc/nagios/passwd {{nagios_username}} {{nagios_password}}
+  ignore_errors: true
+
+- name: Create nagios guest user
+  command: htpasswd -b /etc/nagios/passwd {{nagios_ro_username}} {{nagios_ro_password}}
+  ignore_errors: true
+
+- name: Configure nagios main configuration
+  copy: src=nagios.cfg dest=/etc/nagios/nagios.cfg
+
+- name: Configure nagios localhost monitoring
+  copy: src=localhost.cfg dest=/etc/nagios/objects/localhost.cfg
+
+- name: Create generic nagios services config
+  copy: src=services.cfg dest=/etc/nagios/
+
+- name: Generate the nagios monitoring templates
+  template: src={{ item + ".j2" }}
+            dest=/etc/nagios/conf.d/{{ item }}
+  with_items:
+    - webservers.cfg
+    - servers.cfg
+    - commands.cfg
+  register: nagios_needs_restart
+
+- name: Generate the nagios contact template
+  template: src={{ item + ".j2" }}
+            dest=/etc/nagios/objects/{{ item }}
+  with_items:
+    - contacts.cfg
+
+- name: Generate the nagios user CGI template
+  template: src={{ item + ".j2" }}
+            dest=/etc/nagios/{{ item }}
+  with_items:
+    - cgi.cfg
+
+# nagios upgrade to 4.2.4 requires this
+# todo: file bug
+- name: Create nagios results directory
+  file:
+    path=/var/log/nagios/spool/checkresults
+    state=directory
+    owner=nagios
+    group=nagios
+    mode=0755
+    seuser=system_u
+
+# employ lineinfile fix for faulty, shipped nagios systemd service
+- name: Check/fix systemd service file
+  lineinfile: dest=/usr/lib/systemd/system/nagios.service \
+          regexp="^ExecStopPost=" \
+          line="ExecStopPost=/usr/bin/rm -f /var/spool/nagios/cmd/nagios.cmd /var/log/nagios/rw/nagios.qh"
+  register: systemd_nagios_changed
+
+# change listening port for http to match group_vars/all.yml
+- name: Set HTTP Listen Port
+  lineinfile: dest=/etc/httpd/conf/httpd.conf \
+          regexp="^Listen" \
+          line="Listen {{nagios_http_port}}"
+
+- name: Reload Systemd if needed
+  command: systemctl daemon-reload
+  when: systemd_nagios_changed !=0
+
+- name: Start nagios service
+  command: systemctl restart nagios.service
+
+- name: Set nagios to start on boot
+  command: systemctl enable nagios.service
+  ignore_errors: true
+
+- name: Setup HTTPD service
+  command: systemctl enable httpd.service
+  ignore_errors: true
+
+- name: Restart HTTPD service
+  command: systemctl restart httpd.service
+  ignore_errors: true
+
+- name: Display nagios information
+  debug:
+    msg="You can access nagios at http://{{ansible_fqdn}}/nagios using {{nagios_username}} / {{nagios_password}}"
+
+- name: Display nagios guest information
+  debug:
+    msg="Guest read only users at http://{{ansible_fqdn}}/nagios using {{nagios_ro_username}} / {{nagios_ro_password}}"
+
+- name: Display user password change information
+  debug:
+    msg="Run the following to change the nagios password --> htpasswd /etc/nagios/passwd nagiosadmin"
+
