@@ -9,8 +9,8 @@
   yum: name={{item}} state=latest
   with_items:
    - epel-release
-- name: yum update to latest version
-  yum: name='*' state=latest
+     #- name: yum update to latest version
+     #  yum: name='*' state=latest
 
 - name: selinux disable
   selinux: state=disabled
